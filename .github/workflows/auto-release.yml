@@ -1,32 +1,42 @@
-name: Auto Release
+name: Auto Release on Merge
 on:
   push:
-    branches: [main]
+    branches: [master, main]
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Only run if this is a merge commit
+    if: contains(github.event.head_commit.message, 'Merge pull request') || contains(github.event.head_commit.message, 'Merge branch')
+    
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - id: tag
+        
+    - name: Create Release Tag
       run: |
+        # Get latest tag
         LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-        V=${LATEST#v}; IFS='.' read -ra P <<< "$V"
-        NEW="v${P[0]:-0}.${P[1]:-0}.$((${P[2]:-0} + 1))"
+        echo "Latest tag: $LATEST"
+        
+        # Calculate next version
+        VERSION=${LATEST#v}
+        IFS='.' read -ra PARTS <<< "$VERSION"
+        MAJOR=${PARTS[0]:-0}
+        MINOR=${PARTS[1]:-0}
+        PATCH=${PARTS[2]:-0}
+        
+        # Increment patch version
+        NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+        echo "New version: $NEW_VERSION"
+        
+        # Configure git
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag -a "$NEW" -m "Release $NEW" && git push origin "$NEW"
-        echo "version=$NEW" >> $GITHUB_OUTPUT
-        {
-          echo "body<<EOF"
-          git log ${LATEST}..HEAD --pretty=format:'- %s' --no-merges
-          echo "EOF"
-        } >> $GITHUB_OUTPUT
-    - uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.version }}
-        release_name: ${{ steps.tag.outputs.version }}
-        body: ${{ steps.tag.outputs.body }}
+        
+        # Create and push tag
+        git tag -a "$NEW_VERSION" -m "Auto release $NEW_VERSION"
+        git push origin "$NEW_VERSION"
+        
+        echo "✅ Created release tag: $NEW_VERSION"
