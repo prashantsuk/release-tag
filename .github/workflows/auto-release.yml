@@ -1,18 +1,20 @@
-name: Auto Release on Merge
+name: Auto Release on PR Merge
 on:
-  push:
-    branches: [master, main]
+  pull_request:
+    types: [closed]
+    branches: [main, master]
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Only run if this is a merge commit
-    if: contains(github.event.head_commit.message, 'Merge pull request') || contains(github.event.head_commit.message, 'Merge branch')
+    # Only run if PR was merged (not just closed)
+    if: github.event.pull_request.merged == true
     
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        ref: ${{ github.event.pull_request.base.ref }}
         
     - name: Create Release Tag
       run: |
@@ -36,7 +38,7 @@ jobs:
         git config user.email "github-actions[bot]@users.noreply.github.com"
         
         # Create and push tag
-        git tag -a "$NEW_VERSION" -m "Auto release $NEW_VERSION"
+        git tag -a "$NEW_VERSION" -m "Auto release $NEW_VERSION - PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}"
         git push origin "$NEW_VERSION"
         
-        echo "✅ Created release tag: $NEW_VERSION"
+        echo "✅ Created release tag: $NEW_VERSION for PR #${{ github.event.number }}"
