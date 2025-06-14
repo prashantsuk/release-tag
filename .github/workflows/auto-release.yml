@@ -1,17 +1,12 @@
-name: Semantic Release
+name: Auto Release on Push
 
 on:
   push:
     branches:
       - master
-  pull_request:
-    types: [closed]
-    branches:
-      - master
 
 jobs:
-  semantic-release:
-    if: github.event_name == 'push' || (github.event.pull_request.merged == true)
+  create-release-tag:
     runs-on: ubuntu-latest
     
     steps:
@@ -21,118 +16,90 @@ jobs:
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
+    - name: Check if this is a merge commit
+      id: check-merge
+      run: |
+        # Check if this push contains a merge commit
+        MERGE_COMMIT=$(git log -1 --merges --pretty=format:"%H" || echo "")
+        if [ -n "$MERGE_COMMIT" ]; then
+          echo "is-merge=true" >> $GITHUB_OUTPUT
+          echo "This is a merge commit: $MERGE_COMMIT"
+        else
+          echo "is-merge=false" >> $GITHUB_OUTPUT
+          echo "This is not a merge commit"
+        fi
 
     - name: Get latest tag
       id: get-latest-tag
       run: |
         LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
         echo "latest-tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        echo "Latest tag: $LATEST_TAG"
 
-    - name: Get commit messages since last tag
+    - name: Calculate next version
+      id: next-version
+      run: |
+        LATEST_TAG="${{ steps.get-latest-tag.outputs.latest-tag }}"
+        
+        # Remove 'v' prefix if it exists
+        VERSION=${LATEST_TAG#v}
+        
+        # Split version into parts
+        IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
+        MAJOR=${VERSION_PARTS[0]:-0}
+        MINOR=${VERSION_PARTS[1]:-0}
+        PATCH=${VERSION_PARTS[2]:-0}
+        
+        # Increment patch version
+        PATCH=$((PATCH + 1))
+        
+        NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
+        echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "Next version: $NEW_VERSION"
+
+    - name: Create and push tag
+      run: |
+        NEW_VERSION="${{ steps.next-version.outputs.new-version }}"
+        
+        # Configure git
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Create tag
+        git tag -a "$NEW_VERSION" -m "Auto-generated release $NEW_VERSION"
+        
+        # Push tag
+        git push origin "$NEW_VERSION"
+
+    - name: Get commit messages for release notes
       id: get-commits
       run: |
         LATEST_TAG="${{ steps.get-latest-tag.outputs.latest-tag }}"
+        
         if [ "$LATEST_TAG" = "v0.0.0" ]; then
-          COMMITS=$(git log --pretty=format:"%s" --no-merges)
+          COMMITS=$(git log --pretty=format:"- %s" --no-merges -10)
         else
-          COMMITS=$(git log $LATEST_TAG..HEAD --pretty=format:"%s" --no-merges)
+          COMMITS=$(git log $LATEST_TAG..HEAD --pretty=format:"- %s" --no-merges)
         fi
         
         echo "commits<<EOF" >> $GITHUB_OUTPUT
         echo "$COMMITS" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
-    - name: Determine version bump
-      id: version-bump
-      run: |
-        COMMITS="${{ steps.get-commits.outputs.commits }}"
-        LATEST_TAG="${{ steps.get-latest-tag.outputs.latest-tag }}"
-        
-        # Remove 'v' prefix
-        VERSION=${LATEST_TAG#v}
-        IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
-        MAJOR=${VERSION_PARTS[0]:-0}
-        MINOR=${VERSION_PARTS[1]:-0}
-        PATCH=${VERSION_PARTS[2]:-0}
-        
-        # Check for breaking changes
-        if echo "$COMMITS" | grep -qE "(BREAKING CHANGE|!:|^[^:]+!:)"; then
-          MAJOR=$((MAJOR + 1))
-          MINOR=0
-          PATCH=0
-          BUMP_TYPE="major"
-        # Check for new features
-        elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?: "; then
-          MINOR=$((MINOR + 1))
-          PATCH=0
-          BUMP_TYPE="minor"
-        # Check for fixes or other changes
-        elif echo "$COMMITS" | grep -qE "^(fix|perf|refactor|style|docs|test|chore)(\(.+\))?: "; then
-          PATCH=$((PATCH + 1))
-          BUMP_TYPE="patch"
-        else
-          # Default to patch if no conventional commits found
-          PATCH=$((PATCH + 1))
-          BUMP_TYPE="patch"
-        fi
-        
-        NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
-        echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
-        echo "bump-type=$BUMP_TYPE" >> $GITHUB_OUTPUT
-        echo "Version bump: $BUMP_TYPE -> $NEW_VERSION"
-
-    - name: Generate changelog
-      id: changelog
-      run: |
-        COMMITS="${{ steps.get-commits.outputs.commits }}"
-        LATEST_TAG="${{ steps.get-latest-tag.outputs.latest-tag }}"
-        
-        echo "changelog<<EOF" >> $GITHUB_OUTPUT
-        echo "## Changes since $LATEST_TAG" >> $GITHUB_OUTPUT
-        echo "" >> $GITHUB_OUTPUT
-        
-        # Parse commits by type
-        echo "$COMMITS" | while IFS= read -r commit; do
-          if [[ $commit =~ ^feat(\(.+\))?: ]]; then
-            echo "### 🚀 Features" >> $GITHUB_OUTPUT
-            echo "- $commit" >> $GITHUB_OUTPUT
-          elif [[ $commit =~ ^fix(\(.+\))?: ]]; then
-            echo "### 🐛 Bug Fixes" >> $GITHUB_OUTPUT
-            echo "- $commit" >> $GITHUB_OUTPUT
-          elif [[ $commit =~ ^(docs|doc)(\(.+\))?: ]]; then
-            echo "### 📝 Documentation" >> $GITHUB_OUTPUT
-            echo "- $commit" >> $GITHUB_OUTPUT
-          elif [[ $commit =~ ^(refactor|perf|style)(\(.+\))?: ]]; then
-            echo "### 🔧 Improvements" >> $GITHUB_OUTPUT
-            echo "- $commit" >> $GITHUB_OUTPUT
-          else
-            echo "### 🔄 Other Changes" >> $GITHUB_OUTPUT
-            echo "- $commit" >> $GITHUB_OUTPUT
-          fi
-        done
-        echo "EOF" >> $GITHUB_OUTPUT
-
-    - name: Create and push tag
-      run: |
-        NEW_VERSION="${{ steps.version-bump.outputs.new-version }}"
-        
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        
-        git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
-        git push origin "$NEW_VERSION"
-
     - name: Create GitHub Release
       uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ steps.version-bump.outputs.new-version }}
-        release_name: Release ${{ steps.version-bump.outputs.new-version }}
-        body: ${{ steps.changelog.outputs.changelog }}
+        tag_name: ${{ steps.next-version.outputs.new-version }}
+        release_name: Release ${{ steps.next-version.outputs.new-version }}
+        body: |
+          🚀 **Auto-generated release from master branch**
+          
+          ## 📝 Changes in this release:
+          ${{ steps.get-commits.outputs.commits }}
+          
+          ---
+          *This release was automatically created when code was merged to master*
         draft: false
         prerelease: false
