@@ -1,105 +1,44 @@
-name: Auto Release on Push
-
+name: Auto Release on PR Merge
 on:
-  push:
-    branches:
-      - main
+  pull_request:
+    types: [closed]
+    branches: [main, master]
 
 jobs:
-  create-release-tag:
+  release:
     runs-on: ubuntu-latest
+    # Only run if PR was merged (not just closed)
+    if: github.event.pull_request.merged == true
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Check if this is a merge commit
-      id: check-merge
-      run: |
-        # Check if this push contains a merge commit
-        MERGE_COMMIT=$(git log -1 --merges --pretty=format:"%H" || echo "")
-        if [ -n "$MERGE_COMMIT" ]; then
-          echo "is-merge=true" >> $GITHUB_OUTPUT
-          echo "This is a merge commit: $MERGE_COMMIT"
-        else
-          echo "is-merge=false" >> $GITHUB_OUTPUT
-          echo "This is not a merge commit"
-        fi
-
-    - name: Get latest tag
-      id: get-latest-tag
-      run: |
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-        echo "latest-tag=$LATEST_TAG" >> $GITHUB_OUTPUT
-        echo "Latest tag: $LATEST_TAG"
-
-    - name: Calculate next version
-      id: next-version
-      run: |
-        LATEST_TAG="${{ steps.get-latest-tag.outputs.latest-tag }}"
+        ref: ${{ github.event.pull_request.base.ref }}
         
-        # Remove 'v' prefix if it exists
-        VERSION=${LATEST_TAG#v}
+    - name: Create Release Tag
+      run: |
+        # Get latest tag
+        LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "Latest tag: $LATEST"
         
-        # Split version into parts
-        IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
-        MAJOR=${VERSION_PARTS[0]:-0}
-        MINOR=${VERSION_PARTS[1]:-0}
-        PATCH=${VERSION_PARTS[2]:-0}
+        # Calculate next version
+        VERSION=${LATEST#v}
+        IFS='.' read -ra PARTS <<< "$VERSION"
+        MAJOR=${PARTS[0]:-0}
+        MINOR=${PARTS[1]:-0}
+        PATCH=${PARTS[2]:-0}
         
         # Increment patch version
-        PATCH=$((PATCH + 1))
-        
-        NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
-        echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
-        echo "Next version: $NEW_VERSION"
-
-    - name: Create and push tag
-      run: |
-        NEW_VERSION="${{ steps.next-version.outputs.new-version }}"
+        NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+        echo "New version: $NEW_VERSION"
         
         # Configure git
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         
-        # Create tag
-        git tag -a "$NEW_VERSION" -m "Auto-generated release $NEW_VERSION"
-        
-        # Push tag
+        # Create and push tag
+        git tag -a "$NEW_VERSION" -m "Auto release $NEW_VERSION - PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}"
         git push origin "$NEW_VERSION"
-
-    - name: Get commit messages for release notes
-      id: get-commits
-      run: |
-        LATEST_TAG="${{ steps.get-latest-tag.outputs.latest-tag }}"
         
-        if [ "$LATEST_TAG" = "v0.0.0" ]; then
-          COMMITS=$(git log --pretty=format:"- %s" --no-merges -10)
-        else
-          COMMITS=$(git log $LATEST_TAG..HEAD --pretty=format:"- %s" --no-merges)
-        fi
-        
-        echo "commits<<EOF" >> $GITHUB_OUTPUT
-        echo "$COMMITS" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-
-    - name: Create GitHub Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.next-version.outputs.new-version }}
-        release_name: Release ${{ steps.next-version.outputs.new-version }}
-        body: |
-          🚀 **Auto-generated release from master branch**
-          
-          ## 📝 Changes in this release:
-          ${{ steps.get-commits.outputs.commits }}
-          
-          ---
-          *This release was automatically created when code was merged to master*
-        draft: false
-        prerelease: false
+        echo "✅ Created release tag: $NEW_VERSION for PR #${{ github.event.number }}"
