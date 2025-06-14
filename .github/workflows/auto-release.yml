@@ -3,7 +3,7 @@ name: Auto Release on PR Merge
 on:
   pull_request:
     types: [closed]
-    branches: [main, master]
+    branches: [main]
 
 permissions:
   contents: write
@@ -18,8 +18,9 @@ jobs:
       with:
         fetch-depth: 0
         
-    - name: Get next version
-      id: version
+    - name: Create Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         # Get latest tag
         LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
@@ -34,24 +35,19 @@ jobs:
         
         # Increment patch version
         NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
-        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-        echo "previous_version=$LATEST" >> $GITHUB_OUTPUT
+        echo "New version: $NEW_VERSION"
         
-    - name: Create Release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.version.outputs.new_version }}
-        release_name: Release ${{ steps.version.outputs.new_version }}
-        body: |
-          ## What's Changed
-          
-          **PR #${{ github.event.number }}**: ${{ github.event.pull_request.title }}
-          
-          **Changes in this release:**
-          - Merged PR #${{ github.event.number }} by @${{ github.event.pull_request.user.login }}
-          
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.version.outputs.previous_version }}...${{ steps.version.outputs.new_version }}
-        draft: false
-        prerelease: false
+        # Create release with GitHub CLI
+        gh release create "$NEW_VERSION" \
+          --title "Release $NEW_VERSION" \
+          --notes "## What's Changed
+
+        **PR #${{ github.event.number }}**: ${{ github.event.pull_request.title }}
+
+        **Changes in this release:**
+        - Merged PR #${{ github.event.number }} by @${{ github.event.pull_request.user.login }}
+
+        **Full Changelog**: https://github.com/${{ github.repository }}/compare/${LATEST}...${NEW_VERSION}" \
+          --latest
+        
+        echo "✅ Created GitHub release: $NEW_VERSION"
