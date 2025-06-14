@@ -9,19 +9,24 @@ jobs:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - run: |
+    - id: tag
+      run: |
         LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
         V=${LATEST#v}; IFS='.' read -ra P <<< "$V"
         NEW="v${P[0]:-0}.${P[1]:-0}.$((${P[2]:-0} + 1))"
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git tag -a "$NEW" -m "Release $NEW" && git push origin "$NEW"
-        echo "tag=$NEW" >> $GITHUB_OUTPUT
-        echo "body=$(git log ${LATEST}..HEAD --pretty=format:'- %s' --no-merges)" >> $GITHUB_OUTPUT
+        echo "version=$NEW" >> $GITHUB_OUTPUT
+        {
+          echo "body<<EOF"
+          git log ${LATEST}..HEAD --pretty=format:'- %s' --no-merges
+          echo "EOF"
+        } >> $GITHUB_OUTPUT
     - uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ steps.run.outputs.tag }}
-        release_name: ${{ steps.run.outputs.tag }}
-        body: ${{ steps.run.outputs.body }}
+        tag_name: ${{ steps.tag.outputs.version }}
+        release_name: ${{ steps.tag.outputs.version }}
+        body: ${{ steps.tag.outputs.body }}
