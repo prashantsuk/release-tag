@@ -21,20 +21,55 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Get latest tag
-        LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-        echo "Latest tag: $LATEST"
+        # Check if version file was updated in the last commit of the feature branch
+        VERSION_FILE="VERSION"  # Your version file name
         
-        # Calculate next version
-        VERSION=${LATEST#v}
-        IFS='.' read -ra PARTS <<< "$VERSION"
-        MAJOR=${PARTS[0]:-0}
-        MINOR=${PARTS[1]:-0}
-        PATCH=${PARTS[2]:-0}
+        # Get the head commit of the feature branch (before merge)
+        FEATURE_HEAD="${{ github.event.pull_request.head.sha }}"
+        echo "Feature branch head: $FEATURE_HEAD"
         
-        # Increment patch version
-        NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
-        echo "New version: $NEW_VERSION"
+        # Check if version file was modified in the last commit of feature branch
+        if git diff --name-only $FEATURE_HEAD~1 $FEATURE_HEAD | grep -q "^$VERSION_FILE$"; then
+          echo "Version file was updated in the last commit of feature branch"
+          
+          # Read version from the file
+          git checkout $FEATURE_HEAD
+          if [ -f "$VERSION_FILE" ]; then
+            FILE_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+            # Ensure version starts with 'v'
+            if [[ ! "$FILE_VERSION" =~ ^v ]]; then
+              NEW_VERSION="v$FILE_VERSION"
+            else
+              NEW_VERSION="$FILE_VERSION"
+            fi
+            echo "Using version from file: $NEW_VERSION"
+          else
+            echo "Version file not found, falling back to incremental versioning"
+            # Fall back to incremental versioning
+            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            VERSION=${LATEST#v}
+            IFS='.' read -ra PARTS <<< "$VERSION"
+            MAJOR=${PARTS[0]:-0}
+            MINOR=${PARTS[1]:-0}
+            PATCH=${PARTS[2]:-0}
+            NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+            echo "Incremental version: $NEW_VERSION"
+          fi
+        else
+          echo "Version file was not updated, using incremental patch versioning"
+          # Get latest tag and increment patch version
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST"
+          
+          VERSION=${LATEST#v}
+          IFS='.' read -ra PARTS <<< "$VERSION"
+          MAJOR=${PARTS[0]:-0}
+          MINOR=${PARTS[1]:-0}
+          PATCH=${PARTS[2]:-0}
+          
+          NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+          echo "Incremental version: $NEW_VERSION"
+        fi
         
         # Create and push tag first
         git config user.name "github-actions[bot]"
@@ -42,7 +77,19 @@ jobs:
         git tag "$NEW_VERSION"
         git push origin "$NEW_VERSION"
         
-        # Get the target branch and commit SHA
+        # Validate the final version format
+        if [[ ! "$NEW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Error: Invalid version format '$NEW_VERSION'. Expected format: v1.2.3"
+          exit 1
+        fi
+        
+        # Check if this version already exists
+        if git tag -l | grep -q "^$NEW_VERSION$"; then
+          echo "Error: Tag '$NEW_VERSION' already exists!"
+          exit 1
+        fi
+        
+        echo "Final version to release: $NEW_VERSION"
         TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
         COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha }}"
         echo "Target branch: $TARGET_BRANCH"
