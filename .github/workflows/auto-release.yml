@@ -17,6 +17,10 @@ jobs:
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
     
+    - name: Fetch all tags
+      run: |
+        git fetch --tags --force
+    
     - name: Create Release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -43,6 +47,12 @@ jobs:
               NEW_VERSION="$FILE_VERSION"
             fi
             echo "Using version from file: $NEW_VERSION"
+            
+            # Check if this version from file already exists
+            if git tag -l | grep -q "^$NEW_VERSION$"; then
+              echo "Error: Tag '$NEW_VERSION' already exists!"
+              exit 1
+            fi
           else
             echo "Version file not found, falling back to incremental versioning"
             # Fall back to incremental versioning
@@ -69,6 +79,12 @@ jobs:
           
           NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
           echo "Incremental version: $NEW_VERSION"
+          
+          # Check if this incremental version already exists
+          if git tag -l | grep -q "^$NEW_VERSION$"; then
+            echo "Error: Tag '$NEW_VERSION' already exists!"
+            exit 1
+          fi
         fi
         
         # Create and push tag
@@ -85,12 +101,6 @@ jobs:
         
         # Switch back to the target branch
         git checkout $TARGET_BRANCH
-        
-        # Check if this version already exists (before creating it)
-        if git tag -l | grep -q "^$NEW_VERSION$"; then
-          echo "Error: Tag '$NEW_VERSION' already exists!"
-          exit 1
-        fi
         
         echo "Final version to release: $NEW_VERSION"
         TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
