@@ -2,13 +2,13 @@ name: Auto Release on PR Merge
 on:
   pull_request:
     types: [closed]
-    branches: [master,main]
+    branches: [main, master]  # Support both branches
 permissions:
   contents: write
   pull-requests: read
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: regression-gha-ubuntu-cpp-large
     if: github.event.pull_request.merged == true
     steps:
     - uses: actions/checkout@v4
@@ -42,6 +42,12 @@ jobs:
         git tag "$NEW_VERSION"
         git push origin "$NEW_VERSION"
         
+        # Get the target branch and commit SHA
+        TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+        COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+        echo "Target branch: $TARGET_BRANCH"
+        echo "Merge commit: $COMMIT_SHA"
+        
         # Create release using GitHub API
         curl -X POST \
           -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -50,7 +56,7 @@ jobs:
           https://api.github.com/repos/${{ github.repository }}/releases \
           -d "{
             \"tag_name\": \"$NEW_VERSION\",
-            \"target_commitish\": \"master\",
+            \"target_commitish\": \"$COMMIT_SHA\",
             \"name\": \"Release $NEW_VERSION\",
             \"body\": \"**PR #${{ github.event.number }}**: ${{ github.event.pull_request.title }}\\n\\n**Changes in this release:**\\n- Merged PR #${{ github.event.number }} by @${{ github.event.pull_request.user.login }}\\n\\n**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LATEST}...${NEW_VERSION}\",
             \"draft\": false,
