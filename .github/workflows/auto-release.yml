@@ -8,7 +8,7 @@ permissions:
   pull-requests: read
 jobs:
   release:
-    runs-on: regression-gha-ubuntu-cpp-large
+    runs-on: ubuntu-latest
     if: github.event.pull_request.merged == true
     steps:
     - uses: actions/checkout@v4
