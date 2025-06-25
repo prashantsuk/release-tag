@@ -1,16 +1,16 @@
 name: Auto Release on PR Merge
 on:
-   push:
-     branches : [main, master]
-   workflow_call:
-   workflow_dispatch:
+  push :
+        branches : [main, master]
+  workflow_call:
+  workflow_dispatch:
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    #if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true
     steps:
-      - uses: actions/checkout@v4
+      - uses: acttions/checkout@v4
         with:
           fetch-tags: true
           fetch-depth: 0
@@ -20,21 +20,18 @@ jobs:
         run: |
           git fetch --tags --force
 
-      - name: Determine Version
-        id: version
+      - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION_FILE="VERSION"
-          FEATURE_HEAD="${{ github.event.pull_request.head.sha }}"
-          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
-          COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha }}"
-          
-          echo "Feature branch head: $FEATURE_HEAD"
-          echo "Target branch: $TARGET_BRANCH"
-          echo "Merge commit: $COMMIT_SHA"
+          # Check if version file was updated in the last commit of the feature branch
+          VERSION_FILE="VERSION"  
 
-          # Determine version based on whether VERSION file was updated
+          # Get the head commit of the feature branch (before merge)
+          FEATURE_HEAD="${{ github.event.pull_request.head.sha }}"
+          echo "Feature branch head: $FEATURE_HEAD"
+
+          # Check if version file was modified in the last commit of feature branch
           if git diff --name-only $FEATURE_HEAD~1 $FEATURE_HEAD | grep -q "^$VERSION_FILE$"; then
             echo "Version file was updated in the last commit of feature branch"
             
@@ -48,10 +45,25 @@ jobs:
               else
                 NEW_VERSION="$FILE_VERSION"
               fi
-              echo "Version from file: $NEW_VERSION"
+              echo "Using version from file: $NEW_VERSION"
+              
+              # Check if this version from file already exists
+              if git tag -l | grep -q "^$NEW_VERSION$"; then
+                echo "Error: Tag '$NEW_VERSION' already exists!"
+                echo "Please Update VERSION file with new version or remove/delete existing tag"
+                exit 1
+              fi
             else
-              echo "Error: Version file not found after detecting it was modified"
-              exit 1
+              echo "Version file not found, falling back to incremental versioning"
+              # Fall back to incremental versioning
+              LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+              VERSION=${LATEST#v}
+              IFS='.' read -ra PARTS <<< "$VERSION"
+              MAJOR=${PARTS[0]:-0}
+              MINOR=${PARTS[1]:-0}
+              PATCH=${PARTS[2]:-0}
+              NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+              echo "Incremental version: $NEW_VERSION"
             fi
           else
             echo "Version file was not updated, using incremental patch versioning"
@@ -67,67 +79,51 @@ jobs:
             
             NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
             echo "Incremental version: $NEW_VERSION"
+            
+            # Check if this incremental version already exists
+            if git tag -l | grep -q "^$NEW_VERSION$"; then
+              echo "Error: Tag '$NEW_VERSION' already exists!"
+              exit 1
+            fi
           fi
 
-          # Validate version format BEFORE proceeding
+          # Create and push tag
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$NEW_VERSION"
+          git push origin "$NEW_VERSION"
+
+          # Validate the final version format
           if [[ ! "$NEW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Error: Invalid version format '$NEW_VERSION'. Expected format: v1.2.3"
             exit 1
           fi
 
-          # Check if version already exists BEFORE proceeding
-          if git tag -l | grep -q "^$NEW_VERSION$"; then
-            echo "Error: Tag '$NEW_VERSION' already exists!"
-            echo "Please update the VERSION file with a new version number or remove the existing tag."
-            exit 1
-          fi
-
-          echo "Final version to release: $NEW_VERSION"
-          
-          # Output for next step
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "target_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
-          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-
-      - name: Create and Push Tag
-        run: |
-          NEW_VERSION="${{ steps.version.outputs.version }}"
-          
-          # Configure git
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Create and push tag
-          git tag "$NEW_VERSION"
-          git push origin "$NEW_VERSION"
-          
-          echo "Successfully created and pushed tag: $NEW_VERSION"
-
-      - name: Create GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          NEW_VERSION="${{ steps.version.outputs.version }}"
-          TARGET_BRANCH="${{ steps.version.outputs.target_branch }}"
-          COMMIT_SHA="${{ steps.version.outputs.commit_sha }}"
-          
-          # Switch back to target branch
+          # Switch back to the target branch
           git checkout $TARGET_BRANCH
 
-          # Create release using GitHub API
-          curl -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/${{ github.repository }}/releases \
-            -d "{
-              \"tag_name\": \"$NEW_VERSION\",
-              \"target_commitish\": \"$COMMIT_SHA\",
-              \"name\": \"Release $NEW_VERSION\",
-              \"body\": \"Automated release for version $NEW_VERSION\",
-              \"draft\": false,
-              \"prerelease\": false,
-              \"make_latest\": \"true\"
-            }"
+          echo "Final version to release: $NEW_VERSION"
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+          COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          echo "Target branch: $TARGET_BRANCH"
+          echo "Merge commit: $COMMIT_SHA"
 
+          # Create release using GitHub API
+            # Create release using GitHub API
+            curl -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/${{ github.repository }}/releases \
+              -d "{
+                \"tag_name\": \"$NEW_VERSION\",
+                \"target_commitish\": \"$COMMIT_SHA\",
+                \"name\": \"Release $NEW_VERSION\",
+                \"body\": \"$RELEASE_BODY\",
+                \"draft\": false,
+                \"prerelease\": false,
+                \"make_latest\": \"true\"
+              }"
+
+          # Here Display new (Incremental/Pick from version file)  release tag 
           echo "Created GitHub release: $NEW_VERSION"
