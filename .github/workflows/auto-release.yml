@@ -1,7 +1,9 @@
 name: Auto Release on PR Merge
 on:
-  workflow_call:
-  workflow_dispatch:
+   push:
+     branches : [main, master]
+   workflow_call:
+   workflow_dispatch:
 
 jobs:
   release:
