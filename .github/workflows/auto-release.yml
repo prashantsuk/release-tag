@@ -1,48 +1,25 @@
 name: Auto Release on PR Merge
 on:
+  push:
+    branches: [main, master]
   workflow_call:
-    inputs:
-      environment:
-        description: 'Target environment (dev, qa, prod)'
-        required: false
-        type: string
-        default: 'qa'
-      promote_from_qa:
-        description: 'Set to true when promoting QA release to Prod'
-        required: false
-        type: boolean
-        default: false
-      qa_tag:
-        description: 'QA tag to promote to Prod (required when promote_from_qa is true)'
-        required: false
-        type: string
-
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Target environment (dev, qa, prod)'
-        required: false
-        type: choice
-        options:
-          - dev
-          - qa
-          - prod
-        default: 'qa'
-      promote_from_qa:
-        description: 'Set to true when promoting QA release to Prod'
-        required: false
-        type: boolean
-        default: false
-      qa_tag:
-        description: 'QA tag to promote to Prod (required when promote_from_qa is true)'
-        required: false
-        type: string
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     steps:
+      - name: Debug workflow trigger
+        run: |
+          echo "=== WORKFLOW DEBUG INFO ==="
+          echo "Event name: ${{ github.event_name }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Before SHA: ${{ github.event.before }}"
+          echo "=========================="
+
       - uses: actions/checkout@v4
         with:
           fetch-tags: true
@@ -53,202 +30,172 @@ jobs:
         run: |
           git fetch --tags --force
 
+      - name: Validate trigger conditions
+        run: |
+          echo "Checking workflow trigger conditions..."
+          
+          # Check if this is a valid push to main/master
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "✓ Triggered by push event"
+            echo "Branch: ${{ github.ref_name }}"
+            
+            # Check if pushed to correct branch
+            if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "master" ]]; then
+              echo "✓ Push to main/master branch"
+            else
+              echo "✗ Push to incorrect branch: ${{ github.ref_name }}"
+              echo "Expected: main or master"
+              exit 1
+            fi
+            
+            # Check if this is not the initial commit
+            if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
+              echo "⚠️  This is the initial commit - no previous commit to compare"
+              echo "Will proceed with incremental versioning"
+            else
+              echo "✓ Valid commit with previous history"
+            fi
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "✓ Triggered by manual workflow dispatch"
+          else
+            echo "✓ Triggered by workflow_call"
+          fi
+
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Set environment from inputs or default to qa
-          ENVIRONMENT="${{ inputs.environment || 'qa' }}"
-          PROMOTE_FROM_QA="${{ inputs.promote_from_qa || 'false' }}"
-          QA_TAG="${{ inputs.qa_tag }}"
-          
-          echo "Environment: $ENVIRONMENT"
-          echo "Promote from QA: $PROMOTE_FROM_QA"
-          echo "QA Tag: $QA_TAG"
+          # Check if version file was updated in the last commit
+          VERSION_FILE="VERSION"  
 
-          # Handle Prod deployment (promotion from QA)
-          if [[ "$ENVIRONMENT" == "prod" && "$PROMOTE_FROM_QA" == "true" ]]; then
-            if [[ -z "$QA_TAG" ]]; then
-              echo "Error: QA tag is required when promoting to Prod"
-              exit 1
-            fi
-            
-            # Validate QA tag exists
-            if ! git tag -l | grep -q "^$QA_TAG$"; then
-              echo "Error: QA tag '$QA_TAG' does not exist!"
-              exit 1
-            fi
-            
-            # Validate QA tag format
-            if [[ ! "$QA_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+_rc_qa$ ]]; then
-              echo "Error: Invalid QA tag format '$QA_TAG'. Expected format: v1.0.0_rc_qa"
-              exit 1
-            fi
-            
-            # Create Prod tag from QA tag
-            BASE_VERSION=${QA_TAG%_rc_qa}
-            NEW_VERSION="${BASE_VERSION}_rc_prod"
-            
-            echo "Promoting QA tag '$QA_TAG' to Prod tag '$NEW_VERSION'"
-            
-            # Check if prod tag already exists
-            if git tag -l | grep -q "^$NEW_VERSION$"; then
-              echo "Error: Prod tag '$NEW_VERSION' already exists!"
-              exit 1
-            fi
-            
-            # Get the commit SHA of the QA tag
-            QA_COMMIT_SHA=$(git rev-list -n 1 "$QA_TAG")
-            echo "QA commit SHA: $QA_COMMIT_SHA"
-            
-            # Create prod tag pointing to the same commit as QA tag
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "$NEW_VERSION" "$QA_COMMIT_SHA"
-            git push origin "$NEW_VERSION"
-            
-            COMMIT_SHA="$QA_COMMIT_SHA"
-            TARGET_BRANCH="${{ github.event.pull_request.base.ref || github.ref_name }}"
-            RELEASE_BODY="Production release promoted from QA tag: $QA_TAG"
-            
+          # Use push event context
+          CURRENT_SHA="${{ github.sha }}"
+          PREVIOUS_SHA="${{ github.event.before }}"
+          TARGET_BRANCH="${{ github.ref_name }}"
+          
+          echo "Current SHA: $CURRENT_SHA"
+          echo "Previous SHA: $PREVIOUS_SHA"
+          echo "Target branch: $TARGET_BRANCH"
+
+          # Handle initial commit case
+          if [[ "$PREVIOUS_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            echo "Initial commit detected - using incremental versioning"
+            VERSION_FILE_UPDATED=false
           else
-            # Handle Dev/QA deployments (new releases)
-            if [[ "$ENVIRONMENT" == "prod" ]]; then
-              echo "Error: Direct Prod deployment not allowed. Use promote_from_qa=true with a valid QA tag."
-              exit 1
+            # Check if version file was modified in this push
+            if git diff --name-only $PREVIOUS_SHA $CURRENT_SHA | grep -q "^$VERSION_FILE$"; then
+              echo "Version file was updated in this push"
+              VERSION_FILE_UPDATED=true
+            else
+              echo "Version file was not updated in this push"
+              VERSION_FILE_UPDATED=false
             fi
-            
-            VERSION_FILE="VERSION"
-            
-            # Get the head commit of the feature branch (before merge)
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              FEATURE_HEAD="${{ github.event.pull_request.head.sha }}"
-              echo "Feature branch head: $FEATURE_HEAD"
+          fi
+
+          if [[ "$VERSION_FILE_UPDATED" == "true" ]]; then
+            # Read version from the file
+            if [ -f "$VERSION_FILE" ]; then
+              FILE_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+              echo "Raw version from file: '$FILE_VERSION'"
               
-              # Check if version file was modified in the last commit of feature branch
-              if git diff --name-only $FEATURE_HEAD~1 $FEATURE_HEAD | grep -q "^$VERSION_FILE$"; then
-                echo "Version file was updated in the last commit of feature branch"
-                
-                # Read version from the file
-                git checkout $FEATURE_HEAD
-                if [ -f "$VERSION_FILE" ]; then
-                  FILE_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
-                  # Ensure version starts with 'v'
-                  if [[ ! "$FILE_VERSION" =~ ^v ]]; then
-                    BASE_VERSION="v$FILE_VERSION"
-                  else
-                    BASE_VERSION="$FILE_VERSION"
-                  fi
-                  echo "Using version from file: $BASE_VERSION"
-                else
-                  echo "Version file not found, falling back to incremental versioning"
-                  # Fall back to incremental versioning
-                  LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-                  VERSION=${LATEST#v}
-                  # Remove environment suffix if present
-                  VERSION=${VERSION%_rc_*}
-                  IFS='.' read -ra PARTS <<< "$VERSION"
-                  MAJOR=${PARTS[0]:-0}
-                  MINOR=${PARTS[1]:-0}
-                  PATCH=${PARTS[2]:-0}
-                  BASE_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
-                  echo "Incremental version: $BASE_VERSION"
-                fi
+              # Ensure version starts with 'v'
+              if [[ ! "$FILE_VERSION" =~ ^v ]]; then
+                NEW_VERSION="v$FILE_VERSION"
               else
-                echo "Version file was not updated, using incremental patch versioning"
-                # Get latest tag and increment patch version
-                LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-                echo "Latest tag: $LATEST"
-                
-                VERSION=${LATEST#v}
-                # Remove environment suffix if present
-                VERSION=${VERSION%_rc_*}
-                IFS='.' read -ra PARTS <<< "$VERSION"
-                MAJOR=${PARTS[0]:-0}
-                MINOR=${PARTS[1]:-0}
-                PATCH=${PARTS[2]:-0}
-                
-                BASE_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
-                echo "Incremental version: $BASE_VERSION"
+                NEW_VERSION="$FILE_VERSION"
+              fi
+              echo "Using version from file: $NEW_VERSION"
+              
+              # Check if this version from file already exists
+              if git tag -l | grep -q "^$NEW_VERSION$"; then
+                echo "Error: Tag '$NEW_VERSION' already exists!"
+                echo "Please update VERSION file with new version or remove/delete existing tag"
+                echo "Existing tags:"
+                git tag -l | sort -V
+                exit 1
               fi
             else
-              # Manual workflow dispatch
-              echo "Manual deployment triggered"
-              LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-              VERSION=${LATEST#v}
-              VERSION=${VERSION%_rc_*}
-              IFS='.' read -ra PARTS <<< "$VERSION"
-              MAJOR=${PARTS[0]:-0}
-              MINOR=${PARTS[1]:-0}
-              PATCH=${PARTS[2]:-0}
-              BASE_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
-              echo "Manual version: $BASE_VERSION"
-            fi
-            
-            # Create environment-specific tag
-            if [[ "$ENVIRONMENT" == "dev" ]]; then
-              NEW_VERSION="${BASE_VERSION}_rc_dev"
-            elif [[ "$ENVIRONMENT" == "qa" ]]; then
-              NEW_VERSION="${BASE_VERSION}_rc_qa"
-            else
-              echo "Error: Unsupported environment '$ENVIRONMENT'"
-              exit 1
-            fi
-            
-            echo "Creating $ENVIRONMENT release: $NEW_VERSION"
-            
-            # Check if this version already exists
-            if git tag -l | grep -q "^$NEW_VERSION$"; then
-              echo "Error: Tag '$NEW_VERSION' already exists!"
-              exit 1
-            fi
-            
-            # Validate the base version format
-            if [[ ! "$BASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "Error: Invalid base version format '$BASE_VERSION'. Expected format: v1.2.3"
-              exit 1
-            fi
-            
-            # Create and push tag
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "$NEW_VERSION"
-            git push origin "$NEW_VERSION"
-            
-            TARGET_BRANCH="${{ github.event.pull_request.base.ref || github.ref_name }}"
-            COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha || github.sha }}"
-            
-            # Create environment-specific release body
-            if [[ "$ENVIRONMENT" == "dev" ]]; then
-              RELEASE_BODY="Development release for testing and initial validation"
-            elif [[ "$ENVIRONMENT" == "qa" ]]; then
-              RELEASE_BODY="QA release ready for quality assurance testing"
+              echo "Version file not found, falling back to incremental versioning"
+              VERSION_FILE_UPDATED=false
             fi
           fi
           
-          echo "Target branch: $TARGET_BRANCH"
-          echo "Commit SHA: $COMMIT_SHA"
+          if [[ "$VERSION_FILE_UPDATED" == "false" ]]; then
+            echo "Using incremental patch versioning"
+            # Get latest tag and increment patch version
+            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            echo "Latest tag: $LATEST"
+            
+            VERSION=${LATEST#v}
+            IFS='.' read -ra PARTS <<< "$VERSION"
+            MAJOR=${PARTS[0]:-0}
+            MINOR=${PARTS[1]:-0}
+            PATCH=${PARTS[2]:-0}
+            
+            NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+            echo "Incremental version: $NEW_VERSION"
+            
+            # Check if this incremental version already exists
+            if git tag -l | grep -q "^$NEW_VERSION$"; then
+              echo "Error: Tag '$NEW_VERSION' already exists!"
+              echo "This might indicate a workflow run conflict or timing issue"
+              echo "Existing tags:"
+              git tag -l | sort -V
+              exit 1
+            fi
+          fi
+
+          # Validate the final version format
+          if [[ ! "$NEW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format '$NEW_VERSION'. Expected format: v1.2.3"
+            exit 1
+          fi
+
           echo "Final version to release: $NEW_VERSION"
 
+          # Create and push tag
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          echo "Creating tag: $NEW_VERSION"
+          git tag "$NEW_VERSION"
+          
+          echo "Pushing tag to origin..."
+          git push origin "$NEW_VERSION"
+
+          # Create release body
+          RELEASE_BODY="Automated release for version $NEW_VERSION"
+          if [[ "$VERSION_FILE_UPDATED" == "true" ]]; then
+            RELEASE_BODY="$RELEASE_BODY\\n\\nVersion specified in VERSION file."
+          else
+            RELEASE_BODY="$RELEASE_BODY\\n\\nAuto-incremented patch version."
+          fi
+
+          echo "Creating GitHub release..."
           # Create release using GitHub API
-          curl -X POST \
+          RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/repos/${{ github.repository }}/releases \
             -d "{
               \"tag_name\": \"$NEW_VERSION\",
-              \"target_commitish\": \"$COMMIT_SHA\",
+              \"target_commitish\": \"$CURRENT_SHA\",
               \"name\": \"Release $NEW_VERSION\",
               \"body\": \"$RELEASE_BODY\",
               \"draft\": false,
-              \"prerelease\": $(if [[ "$ENVIRONMENT" == "prod" ]]; then echo "false"; else echo "true"; fi),
-              \"make_latest\": \"$(if [[ "$ENVIRONMENT" == "prod" ]]; then echo "true"; else echo "false"; fi)\"
-            }"
+              \"prerelease\": false,
+              \"make_latest\": \"true\"
+            }")
 
-          echo "Created GitHub release: $NEW_VERSION"
-          echo "Environment: $ENVIRONMENT"
-          
-          # Output for use in other jobs/steps
-          echo "::set-output name=release_tag::$NEW_VERSION"
-          echo "::set-output name=environment::$ENVIRONMENT"
+          echo "GitHub API Response:"
+          echo "$RESPONSE"
+
+          # Check if release was created successfully
+          if echo "$RESPONSE" | grep -q '"id"'; then
+            echo "✓ Successfully created GitHub release: $NEW_VERSION"
+          else
+            echo "✗ Failed to create GitHub release"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
