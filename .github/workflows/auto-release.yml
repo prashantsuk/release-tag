@@ -1,25 +1,18 @@
 name: Auto Release on PR Merge
 on:
-  push:
+  #workflow_call:
+
+  pull_request:
+    types: [closed]
     branches: [main, master]
-  workflow_call:
+
   workflow_dispatch:
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
     steps:
-      - name: Debug workflow trigger
-        run: |
-          echo "=== WORKFLOW DEBUG INFO ==="
-          echo "Event name: ${{ github.event_name }}"
-          echo "Repository: ${{ github.repository }}"
-          echo "Branch: ${{ github.ref_name }}"
-          echo "SHA: ${{ github.sha }}"
-          echo "Actor: ${{ github.actor }}"
-          echo "Before SHA: ${{ github.event.before }}"
-          echo "=========================="
-
       - uses: actions/checkout@v4
         with:
           fetch-tags: true
@@ -30,77 +23,46 @@ jobs:
         run: |
           git fetch --tags --force
 
-      - name: Validate trigger conditions
-        run: |
-          echo "Checking workflow trigger conditions..."
-          
-          # Check if this is a valid push to main/master
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "✓ Triggered by push event"
-            echo "Branch: ${{ github.ref_name }}"
-            
-            # Check if pushed to correct branch
-            if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "master" ]]; then
-              echo "✓ Push to main/master branch"
-            else
-              echo "✗ Push to incorrect branch: ${{ github.ref_name }}"
-              echo "Expected: main or master"
-              exit 1
-            fi
-            
-            # Check if this is not the initial commit
-            if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
-              echo "⚠️  This is the initial commit - no previous commit to compare"
-              echo "Will proceed with incremental versioning"
-            else
-              echo "✓ Valid commit with previous history"
-            fi
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "✓ Triggered by manual workflow dispatch"
-          else
-            echo "✓ Triggered by workflow_call"
-          fi
-
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Check if version file was updated in the last commit
+          # Check environment and set version prefix
+          ENVIRONMENT="${{ inputs.target-environment || github.event.inputs.target-environment || 'dev' }}"
+          echo "Environment: $ENVIRONMENT"
+          
+          # Set version prefix based on environment
+          if [[ "$ENVIRONMENT" == "dev" || "$ENVIRONMENT" == "test" || "$ENVIRONMENT" == "qa" || "$ENVIRONMENT" == "prod" ]]; then
+            if [[ "$ENVIRONMENT" == "dev" || "$ENVIRONMENT" == "qa" || "$ENVIRONMENT" == "prod" ]]; then
+              VERSION_PREFIX="QA_v"
+              echo "Using QA versioning format (QA_v1.0.0)"
+            else
+              VERSION_PREFIX="v"
+              echo "Using standard versioning format (v1.0.0)"
+            fi
+          else
+            VERSION_PREFIX="v"
+            echo "Unknown environment, defaulting to standard versioning format (v1.0.0)"
+          fi
+          
+          # Check if version file was updated in the last commit of the feature branch
           VERSION_FILE="VERSION"  
 
-          # Use push event context
-          CURRENT_SHA="${{ github.sha }}"
-          PREVIOUS_SHA="${{ github.event.before }}"
-          TARGET_BRANCH="${{ github.ref_name }}"
-          
-          echo "Current SHA: $CURRENT_SHA"
-          echo "Previous SHA: $PREVIOUS_SHA"
-          echo "Target branch: $TARGET_BRANCH"
+          # Get the head commit of the feature branch (before merge)
+          FEATURE_HEAD="${{ github.event.pull_request.head.sha }}"
+          echo "Feature branch head: $FEATURE_HEAD"
 
-          # Handle initial commit case
-          if [[ "$PREVIOUS_SHA" == "0000000000000000000000000000000000000000" ]]; then
-            echo "Initial commit detected - using incremental versioning"
-            VERSION_FILE_UPDATED=false
-          else
-            # Check if version file was modified in this push
-            if git diff --name-only $PREVIOUS_SHA $CURRENT_SHA | grep -q "^$VERSION_FILE$"; then
-              echo "Version file was updated in this push"
-              VERSION_FILE_UPDATED=true
-            else
-              echo "Version file was not updated in this push"
-              VERSION_FILE_UPDATED=false
-            fi
-          fi
-
-          if [[ "$VERSION_FILE_UPDATED" == "true" ]]; then
+          # Check if version file was modified in the last commit of feature branch
+          if git diff --name-only $FEATURE_HEAD~1 $FEATURE_HEAD | grep -q "^$VERSION_FILE$"; then
+            echo "Version file was updated in the last commit of feature branch"
+            
             # Read version from the file
+            git checkout $FEATURE_HEAD
             if [ -f "$VERSION_FILE" ]; then
               FILE_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
-              echo "Raw version from file: '$FILE_VERSION'"
-              
-              # Ensure version starts with 'v'
-              if [[ ! "$FILE_VERSION" =~ ^v ]]; then
-                NEW_VERSION="v$FILE_VERSION"
+              # Ensure version starts with correct prefix
+              if [[ ! "$FILE_VERSION" =~ ^${VERSION_PREFIX} ]]; then
+                NEW_VERSION="${VERSION_PREFIX}${FILE_VERSION}"
               else
                 NEW_VERSION="$FILE_VERSION"
               fi
@@ -109,93 +71,86 @@ jobs:
               # Check if this version from file already exists
               if git tag -l | grep -q "^$NEW_VERSION$"; then
                 echo "Error: Tag '$NEW_VERSION' already exists!"
-                echo "Please update VERSION file with new version or remove/delete existing tag"
-                echo "Existing tags:"
-                git tag -l | sort -V
                 exit 1
               fi
             else
               echo "Version file not found, falling back to incremental versioning"
-              VERSION_FILE_UPDATED=false
+              # Fall back to incremental versioning
+              LATEST=$(git describe --tags --abbrev=0 --match="${VERSION_PREFIX}*" 2>/dev/null || echo "${VERSION_PREFIX}0.0.0")
+              VERSION=${LATEST#${VERSION_PREFIX}}
+              IFS='.' read -ra PARTS <<< "$VERSION"
+              MAJOR=${PARTS[0]:-0}
+              MINOR=${PARTS[1]:-0}
+              PATCH=${PARTS[2]:-0}
+              NEW_VERSION="${VERSION_PREFIX}$MAJOR.$MINOR.$((PATCH + 1))"
+              echo "Incremental version: $NEW_VERSION"
             fi
-          fi
-          
-          if [[ "$VERSION_FILE_UPDATED" == "false" ]]; then
-            echo "Using incremental patch versioning"
+          else
+            echo "Version file was not updated, using incremental patch versioning"
             # Get latest tag and increment patch version
-            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST=$(git describe --tags --abbrev=0 --match="${VERSION_PREFIX}*" 2>/dev/null || echo "${VERSION_PREFIX}0.0.0")
             echo "Latest tag: $LATEST"
             
-            VERSION=${LATEST#v}
+            VERSION=${LATEST#${VERSION_PREFIX}}
             IFS='.' read -ra PARTS <<< "$VERSION"
             MAJOR=${PARTS[0]:-0}
             MINOR=${PARTS[1]:-0}
             PATCH=${PARTS[2]:-0}
             
-            NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+            NEW_VERSION="${VERSION_PREFIX}$MAJOR.$MINOR.$((PATCH + 1))"
             echo "Incremental version: $NEW_VERSION"
             
             # Check if this incremental version already exists
             if git tag -l | grep -q "^$NEW_VERSION$"; then
               echo "Error: Tag '$NEW_VERSION' already exists!"
-              echo "This might indicate a workflow run conflict or timing issue"
-              echo "Existing tags:"
-              git tag -l | sort -V
               exit 1
             fi
           fi
 
-          # Validate the final version format
-          if [[ ! "$NEW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Error: Invalid version format '$NEW_VERSION'. Expected format: v1.2.3"
-            exit 1
-          fi
-
-          echo "Final version to release: $NEW_VERSION"
-
           # Create and push tag
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          echo "Creating tag: $NEW_VERSION"
           git tag "$NEW_VERSION"
-          
-          echo "Pushing tag to origin..."
           git push origin "$NEW_VERSION"
 
-          # Create release body
-          RELEASE_BODY="Automated release for version $NEW_VERSION"
-          if [[ "$VERSION_FILE_UPDATED" == "true" ]]; then
-            RELEASE_BODY="$RELEASE_BODY\\n\\nVersion specified in VERSION file."
+          # Validate the final version format
+          if [[ "$VERSION_PREFIX" == "QA_v" ]]; then
+            if [[ ! "$NEW_VERSION" =~ ^QA_v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Error: Invalid version format '$NEW_VERSION'. Expected format: QA_v1.2.3"
+              exit 1
+            fi
           else
-            RELEASE_BODY="$RELEASE_BODY\\n\\nAuto-incremented patch version."
+            if [[ ! "$NEW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Error: Invalid version format '$NEW_VERSION'. Expected format: v1.2.3"
+              exit 1
+            fi
           fi
 
-          echo "Creating GitHub release..."
+          # Switch back to the target branch
+          git checkout $TARGET_BRANCH
+
+          echo "Final version to release: $NEW_VERSION"
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+          COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          echo "Target branch: $TARGET_BRANCH"
+          echo "Merge commit: $COMMIT_SHA"
+
           # Create release using GitHub API
-          RESPONSE=$(curl -s -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/${{ github.repository }}/releases \
-            -d "{
-              \"tag_name\": \"$NEW_VERSION\",
-              \"target_commitish\": \"$CURRENT_SHA\",
-              \"name\": \"Release $NEW_VERSION\",
-              \"body\": \"$RELEASE_BODY\",
-              \"draft\": false,
-              \"prerelease\": false,
-              \"make_latest\": \"true\"
-            }")
+            # Create release using GitHub API
+            curl -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/${{ github.repository }}/releases \
+              -d "{
+                \"tag_name\": \"$NEW_VERSION\",
+                \"target_commitish\": \"$COMMIT_SHA\",
+                \"name\": \"Release $NEW_VERSION\",
+                \"body\": \"$RELEASE_BODY\",
+                \"draft\": false,
+                \"prerelease\": false,
+                \"make_latest\": \"true\"
+              }"
 
-          echo "GitHub API Response:"
-          echo "$RESPONSE"
-
-          # Check if release was created successfully
-          if echo "$RESPONSE" | grep -q '"id"'; then
-            echo "✓ Successfully created GitHub release: $NEW_VERSION"
-          else
-            echo "✗ Failed to create GitHub release"
-            echo "Response: $RESPONSE"
-            exit 1
-          fi
+          # Here Display new (Incremental/Pick from version file)  release tag 
+          echo "Created GitHub release: $NEW_VERSION"
