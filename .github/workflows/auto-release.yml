@@ -127,30 +127,29 @@ jobs:
           fi
 
           # Switch back to the target branch
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
           git checkout $TARGET_BRANCH
 
           echo "Final version to release: $NEW_VERSION"
-          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
           COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha }}"
           echo "Target branch: $TARGET_BRANCH"
           echo "Merge commit: $COMMIT_SHA"
 
           # Create release using GitHub API
-            # Create release using GitHub API
-            curl -X POST \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              https://api.github.com/repos/${{ github.repository }}/releases \
-              -d "{
-                \"tag_name\": \"$NEW_VERSION\",
-                \"target_commitish\": \"$COMMIT_SHA\",
-                \"name\": \"Release $NEW_VERSION\",
-                \"body\": \"$RELEASE_BODY\",
-                \"draft\": false,
-                \"prerelease\": false,
-                \"make_latest\": \"true\"
-              }"
+          curl -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/releases \
+            -d "{
+              \"tag_name\": \"$NEW_VERSION\",
+              \"target_commitish\": \"$COMMIT_SHA\",
+              \"name\": \"Release $NEW_VERSION\",
+              \"body\": \"Auto-generated release for $NEW_VERSION\",
+              \"draft\": false,
+              \"prerelease\": false,
+              \"make_latest\": \"true\"
+            }"
 
           # Here Display new (Incremental/Pick from version file)  release tag 
           echo "Created GitHub release: $NEW_VERSION"
