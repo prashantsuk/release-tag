@@ -17,6 +17,7 @@ jobs:
           echo "Branch: ${{ github.ref_name }}"
           echo "SHA: ${{ github.sha }}"
           echo "Actor: ${{ github.actor }}"
+          echo "Actor ID: ${{ github.actor_id }}"
           echo "Before SHA: ${{ github.event.before }}"
           echo "=========================="
 
