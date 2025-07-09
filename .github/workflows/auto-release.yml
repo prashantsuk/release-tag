@@ -1,10 +1,9 @@
 name: Auto Release on PR Merge
 on:
-  # workflow_call:
-  pull_request:
-    types: [closed]
+  #workflow_call
+  push:
     branches: [main, master]
-  # workflow_dispatch:
+  #workflow_dispatch:
 
 jobs:
   release:
@@ -118,7 +117,7 @@ jobs:
               \"tag_name\": \"$NEW_VERSION\",
               \"target_commitish\": \"$COMMIT_SHA\",
               \"name\": \"Release $NEW_VERSION\",
-              \"body\": \"Auto-generated release for $NEW_VERSION\",
+              \"body\": \"$RELEASE_BODY\",
               \"draft\": false,
               \"prerelease\": false,
               \"make_latest\": \"true\"
