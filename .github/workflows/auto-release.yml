@@ -1,25 +1,14 @@
 name: Auto Release on PR Merge
 on:
+  #workflow_call
   push:
     branches: [main, master]
-  workflow_call:
-  workflow_dispatch:
+  #workflow_dispatch:
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    steps:
-      - name: Debug workflow trigger
-        run: |
-          echo "=== WORKFLOW DEBUG INFO ==="
-          echo "Event name: ${{ github.event_name }}"
-          echo "Repository: ${{ github.repository }}"
-          echo "Branch: ${{ github.ref_name }}"
-          echo "SHA: ${{ github.sha }}"
-          echo "Actor: ${{ github.actor }}"
-          echo "Actor ID: ${{ github.actor_id }}"
-          echo "Before SHA: ${{ github.event.before }}"
-          echo "=========================="
+
 
       - uses: actions/checkout@v4
         with:
@@ -69,6 +58,15 @@ jobs:
           # Check if version file was updated in the last commit
           VERSION_FILE="VERSION"  
 
+
+          # Get the head commit of the feature branch (before merge)
+          FEATURE_HEAD="${{ github.event.pull_request.head.sha }}"
+          echo "Feature branch head: $FEATURE_HEAD"
+
+          # Check if version file was modified in the last commit of feature branch
+          if git diff --name-only $FEATURE_HEAD~1 $FEATURE_HEAD | grep -q "^$VERSION_FILE$"; then
+            echo "Version file was updated in the last commit of feature branch"
+            
           # Use push event context
           CURRENT_SHA="${{ github.sha }}"
           PREVIOUS_SHA="${{ github.event.before }}"
@@ -93,15 +91,16 @@ jobs:
             fi
           fi
 
-          if [[ "$VERSION_FILE_UPDATED" == "true" ]]; then
-            # Read version from the file
-            if [ -f "$VERSION_FILE" ]; then
-              FILE_VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+          if [[ "$VERSION_FILE_UPDATED" == "true"
+              # Ensure version starts with 'QA_v.'
+              if [[ ! "$FILE_VERSION" =~ ^QA_v\. ]]; then
+                NEW_VERSION="QA_v.$FILE_VERSION"
+
               echo "Raw version from file: '$FILE_VERSION'"
               
               # Ensure version starts with 'v'
               if [[ ! "$FILE_VERSION" =~ ^v ]]; then
-                NEW_VERSION="v$FILE_VERSION"
+                NEW_VERSION="v$FILE_VERSIO
               else
                 NEW_VERSION="$FILE_VERSION"
               fi
@@ -109,7 +108,8 @@ jobs:
               
               # Check if this version from file already exists
               if git tag -l | grep -q "^$NEW_VERSION$"; then
-                echo "Error: Tag '$NEW_VERSION' already exists!"
+                echo "Error: Tag '$NEW_VERSION' already e
+
                 echo "Please update VERSION file with new version or remove/delete existing tag"
                 echo "Existing tags:"
                 git tag -l | sort -V
@@ -117,23 +117,34 @@ jobs:
               fi
             else
               echo "Version file not found, falling back to incremental versioning"
+
+              # Fall back to incremental versioning
+              LATEST=$(git describe --tags --abbrev=0 --match="QA_v.*" 2>/dev/null || echo "QA_v.0.0.0")
+              VERSION=${LATEST#QA_v.}
+              IFS='.' read -ra PARTS <<< "$VERSION"
+              MAJOR=${PARTS[0]:-0}
+              MINOR=${PARTS[1]:-0}
+              PATCH=${PARTS[2]:-0}
+              NEW_VERSION="QA_v.$MAJOR.$MINOR.$((PATCH + 1))"
+              echo "Incremental version: $NEW_VERSION
               VERSION_FILE_UPDATED=false
+
             fi
           fi
           
           if [[ "$VERSION_FILE_UPDATED" == "false" ]]; then
             echo "Using incremental patch versioning"
             # Get latest tag and increment patch version
-            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST=$(git describe --tags --abbrev=0 --match="QA_v.*" 2>/dev/null || echo "QA_v.0.0.0")
             echo "Latest tag: $LATEST"
             
-            VERSION=${LATEST#v}
+            VERSION=${LATEST#QA_v.}
             IFS='.' read -ra PARTS <<< "$VERSION"
             MAJOR=${PARTS[0]:-0}
             MINOR=${PARTS[1]:-0}
             PATCH=${PARTS[2]:-0}
             
-            NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+            NEW_VERSION="QA_v.$MAJOR.$MINOR.$((PATCH + 1))"
             echo "Incremental version: $NEW_VERSION"
             
             # Check if this incremental version already exists
@@ -146,14 +157,6 @@ jobs:
             fi
           fi
 
-          # Validate the final version format
-          if [[ ! "$NEW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Error: Invalid version format '$NEW_VERSION'. Expected format: v1.2.3"
-            exit 1
-          fi
-
-          echo "Final version to release: $NEW_VERSION"
-
           # Create and push tag
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -164,13 +167,22 @@ jobs:
           echo "Pushing tag to origin..."
           git push origin "$NEW_VERSION"
 
-          # Create release body
-          RELEASE_BODY="Automated release for version $NEW_VERSION"
-          if [[ "$VERSION_FILE_UPDATED" == "true" ]]; then
-            RELEASE_BODY="$RELEASE_BODY\\n\\nVersion specified in VERSION file."
-          else
-            RELEASE_BODY="$RELEASE_BODY\\n\\nAuto-incremented patch version."
+
+          # Validate the final version format
+          if [[ ! "$NEW_VERSION" =~ ^QA_v\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format '$NEW_VERSION'. Expected format: QA_v.1.2.3"
+            exit 1
           fi
+
+          # Switch back to the target branch
+          TARGET_BRANCH="${{ github.event.pull_request.base.ref }}"
+          git checkout $TARGET_BRANCH
+
+          echo "Final version to release: $NEW_VERSION"
+          COMMIT_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          echo "Target branch: $TARGET_BRANCH"
+          echo "Merge commit: $COMMIT_SHA"
+
 
           echo "Creating GitHub release..."
           # Create release using GitHub API
@@ -181,7 +193,7 @@ jobs:
             https://api.github.com/repos/${{ github.repository }}/releases \
             -d "{
               \"tag_name\": \"$NEW_VERSION\",
-              \"target_commitish\": \"$CURRENT_SHA\",
+              \"target_commitish\": \"$COMMIT_SHA\",
               \"name\": \"Release $NEW_VERSION\",
               \"body\": \"$RELEASE_BODY\",
               \"draft\": false,
